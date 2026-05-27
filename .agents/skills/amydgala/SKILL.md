@@ -115,7 +115,7 @@ A VC contains:
 - `expiry`: unix timestamp
 - `revoked`: bool flag
 
-The memory gateway checks the `AgentCap` object on every query. Revocation is immediate — flip the flag on-chain, and the next query fails. VCs remain the operator-issued policy source that can be used to mint or refresh an `AgentCap`, but they are not the runtime object the gateway authorises against.
+The memory gateway checks the `VerifiableCredential` object on every query. Revocation is immediate — flip the flag on-chain, and the next query fails. VCs remain the operator-issued policy source that can be used to mint or refresh an `VerifiableCredential`, but they are not the runtime object the gateway authorises against.
 
 ### 2.4 Delegation objects
 
@@ -177,7 +177,7 @@ The agent's system prompt instructs it that when it identifies a gap in its cont
    │
 3. Auth & scope check
    ├── Verify session key is authorised (check on-chain session auth tx)
-   ├── Load agent's AgentCap object from SUI
+   ├── Load agent's VerifiableCredential object from SUI
    ├── Confirm scope is within agent's permitted namespaces
    └── If any check fails → return error { code, reason }
    │
@@ -222,7 +222,7 @@ An agent (or the conversation runtime) can write new memories. Write operations 
 4. Memory writer service (off-chain indexer) picks up the event
    ├── Chunks the content (fixed-size or semantic chunking)
    ├── Embeds each chunk
-   ├── Encrypts using SUI Seal (access policy = valid AgentCap for namespace)
+   ├── Encrypts using SUI Seal (access policy = valid VerifiableCredential for namespace)
    ├── Pins encrypted blob to DA layer (IPFS / Walrus)
    └── Gets back CID
    │
@@ -241,7 +241,7 @@ An agent or user can explicitly delete a memory when they have delete permission
 1. Agent or user calls memory_delete(chunk_id)
    │
 2. Memory gateway receives call
-   ├── Verify delete permission on the relevant AgentCap or delegation
+   ├── Verify delete permission on the relevant VerifiableCredential or delegation
    └── Verify the chunk belongs to an authorised namespace
    │
 3. Gateway posts DeleteChunkRef event on SUI
@@ -261,38 +261,71 @@ An agent or user can explicitly delete a memory when they have delete permission
 
 ### 4.1 On-chain objects
 
-#### `MemoryRegistry`
+#### `MemoryRegister`
 
 One per user (or namespace owner). The root object.
 
 ```move
-public struct MemoryRegistry has key, store {
+public struct MemoryRegister has key, store {
     id: UID,
-    owner: address,
-    agent_caps: Table<address, AgentCap>,   // agent_address → cap
-    delegations: Table<address, Delegation>, // agent_address → delegation
-    chunk_refs: Table<vector<u8>, MemoryChunkRef>, // content_hash → ref
-    created_at: u64,
-    version: u64,
+    register_id: String,
+    name: String,
+    description: String,
+    created_by: address,
+    namespaces: vector<Namespace>,
+    revoked_verifiable_credentials: vector<ID>,
+    created_on: u64,
+    image_url: Url,
+}
+
+public struct MemoryRegisterCap has key, store {
+    id: UID,
+    register_id: ID,
+}
+
+public enum Permission has copy, drop, store {
+    Read,
+    Write,
+    Delete
+}
+
+public struct Namespace has store, copy, drop {
+    prefix: String,
+    permissions: vector<Permission>,
 }
 ```
 
-#### `AgentCap`
+#### `VerifiableCredential`
 
 A capability object scoped to a specific agent DID.
 
 ```move
-public struct AgentCap has key, store {
+public struct VerifiableCredential has key, store {
     id: UID,
     registry_id: ID,
-    agent_did: vector<u8>,
+    agent_did: String,
     agent_address: address,
-    namespaces: vector<vector<u8>>,   // permitted namespace prefixes
-    permissions: u8,                  // bitmask: READ=1, WRITE=2, DELETE=4
-    session_key: Option<address>,     // current authorised session key
-    session_expiry: Option<u64>,
-    expiry: u64,
+    namespaces: vector<Namespace>,
+    ttl: Option<u64>,
     revoked: bool,
+}
+
+public struct SessionCreatedEvent has copy, drop {
+    credential_id: ID,
+    session_key: String,
+}
+```
+
+
+
+#### `SessionCreatedEvent` (event)
+
+Emitted when an agent creates a session using their verifiable credential and a 10-14 character session key.
+
+```move
+public struct SessionCreatedEvent has copy, drop {
+    credential_id: ID,
+    session_key: String,
 }
 ```
 
@@ -343,11 +376,11 @@ public struct AccessLog has copy, drop {
 
 SUI's Seal module provides **threshold encryption** where a decryption key is only released when an on-chain condition is satisfied at the moment of the request.
 
-The access policy for each chunk is defined as: *"release the decryption key only if the requesting address holds a valid, non-revoked `AgentCap` for this chunk's namespace at time of request."*
+The access policy for each chunk is defined as: *"release the decryption key only if the requesting address holds a valid, non-revoked `VerifiableCredential` for this chunk's namespace at time of request."*
 
 This means:
 - The encryption policy is enforced by the chain, not by trusting the off-chain storage server
-- Revoking an `AgentCap` immediately prevents decryption of all chunks in that namespace, even if the encrypted blobs are still publicly pinned
+- Revoking an `VerifiableCredential` immediately prevents decryption of all chunks in that namespace, even if the encrypted blobs are still publicly pinned
 - The storage server is completely untrusted — it holds ciphertext it cannot decrypt
 
 ---
@@ -362,7 +395,7 @@ Agent frameworks (LangGraph, CrewAI, AutoGen) often spawn many concurrent agent 
 
 The operator needs a hard kill switch. If an agent starts behaving unexpectedly and begins writing corrupted memories or attempting out-of-scope reads, the operator can:
 1. Refuse to co-sign future write transactions
-2. Revoke the `AgentCap` on-chain
+2. Revoke the `VerifiableCredential` on-chain
 3. Rotate the operator key
 
 No single key compromise leads to a full memory breach.
@@ -400,7 +433,7 @@ did:sui:0xabc.../preferences/communication-style
 did:sui:0xabc.../agent-logs/assistant/2025
 ```
 
-`AgentCap` permissions are granted at a **prefix level**. An agent with access to `work/project-alpha` can read all memories under that prefix. An agent with access to only `work/project-alpha/decisions` cannot read `work/project-alpha/codebase`.
+`VerifiableCredential` permissions are granted at a **prefix level**. An agent with access to `work/project-alpha` can read all memories under that prefix. An agent with access to only `work/project-alpha/decisions` cannot read `work/project-alpha/codebase`.
 
 This is the mechanism that makes selective retrieval possible at the access-control layer — not just at the semantic search layer.
 
@@ -410,8 +443,8 @@ This is the mechanism that makes selective retrieval possible at the access-cont
 
 ```
 sources/
-├── memory_registry.move     # MemoryRegistry CRUD, owner-only mutations
-├── agent_cap.move           # AgentCap issuance, revocation, session key auth
+├── memory_registry.move     # MemoryRegister CRUD, owner-only mutations
+├── agent_cap.move           # VerifiableCredential issuance, revocation, session key auth
 ├── delegation.move          # Delegation objects, grant/revoke flows
 ├── chunk_ref.move           # MemoryChunkRef posting, TTL enforcement
 ├── access_log.move          # AccessLog event emission
@@ -426,8 +459,8 @@ tests/
 ```
 
 Key invariants to enforce in Move:
-- Only the `MemoryRegistry` owner can add or revoke `AgentCap` objects
-- An `AgentCap` can only reference namespaces that exist under the registry owner's DID prefix
+- Only the `MemoryRegister` owner can add or revoke `VerifiableCredential` objects
+- An `VerifiableCredential` can only reference namespaces that exist under the registry owner's DID prefix
 - Session key authorisation must include an expiry; no infinite session keys
 - `AccessLog` events must be emitted on every read, enforced by the gateway entry point function — not left to the caller
 
@@ -457,7 +490,7 @@ The memory writer service is an off-chain process that watches SUI for write-int
 └─────────────────────────────────────────────────┘
 ```
 
-The indexer is **re-derivable from chain history**. If the vector index is corrupted or lost, all `MemoryChunkRef` objects on-chain can be replayed to recover chunk metadata and rebuild the index. For rebuilds that need plaintext, the indexer uses a dedicated Operator indexer key with read-only Seal rebuild permissions to re-decrypt chunks for re-embedding; normal user-scoped `AgentCap` objects are not used for this maintenance path. The chain is the canonical source of which chunks exist; the index is a derived, queryable view.
+The indexer is **re-derivable from chain history**. If the vector index is corrupted or lost, all `MemoryChunkRef` objects on-chain can be replayed to recover chunk metadata and rebuild the index. For rebuilds that need plaintext, the indexer uses a dedicated Operator indexer key with read-only Seal rebuild permissions to re-decrypt chunks for re-embedding; normal user-scoped `VerifiableCredential` objects are not used for this maintenance path. The chain is the canonical source of which chunks exist; the index is a derived, queryable view.
 
 ### Indexer consistency guarantee
 
@@ -496,7 +529,7 @@ await memory.write({
 });
 
 // Revoke access (operator-side)
-await memory.revokeAgentCap({ agentAddress: '0xagent...' });
+await memory.revokeVerifiableCredential({ agentAddress: '0xagent...' });
 ```
 
 ### Tool registration for common frameworks
@@ -530,9 +563,9 @@ const memoryTool = new DynamicStructuredTool({
 | Compromised agent session key | Session keys are scoped and short-lived (TTL). Blast radius bounded by namespace and expiry. |
 | Compromised operator key | Multisig requires agent key too. Rotate operator key; old agent cap revoked. |
 | Malicious off-chain indexer | Content hash on-chain; clients verify hash matches decrypted content. Indexer cannot forge chunk content. |
-| Unauthorised memory read | SUI Seal only releases decryption key if `AgentCap` is valid at time of request. Revoking cap immediately stops decryption. |
+| Unauthorised memory read | SUI Seal only releases decryption key if `VerifiableCredential` is valid at time of request. Revoking cap immediately stops decryption. |
 | Replay of old session key | Session keys carry an on-chain expiry. SUI validators reject transactions signed by expired session keys. |
-| Namespace traversal | `AgentCap.namespaces` stores prefix list; gateway enforces prefix matching server-side before vector search. |
+| Namespace traversal | `VerifiableCredential.namespaces` stores prefix list; gateway enforces prefix matching server-side before vector search. |
 | DA layer content deletion | Content hash on-chain provides proof of existence. Pinning incentives (Walrus epochs) maintain availability. |
 | Agent writing poisoned memories | Write transactions are logged on-chain with `created_by` field. Users can audit and flag. Operator multisig gates writes. |
 
@@ -542,7 +575,7 @@ const memoryTool = new DynamicStructuredTool({
 
 Build in this sequence to validate each layer before depending on it:
 
-1. **SUI Move contracts** — `MemoryRegistry`, `AgentCap`, `MemoryChunkRef`, `AccessLog` event. Deploy to devnet. Write tests.
+1. **SUI Move contracts** — `MemoryRegister`, `VerifiableCredential`, `MemoryChunkRef`, `AccessLog` event. Deploy to devnet. Write tests.
 
 2. **Identity & auth service** — zkLogin integration, session key issuance flow, multisig wallet setup for agent accounts.
 
@@ -556,7 +589,7 @@ Build in this sequence to validate each layer before depending on it:
 
 7. **Audit dashboard** — Query `AccessLog` events by user address and visualise which agents accessed which memories and when. (See [Section 12](#12-user-dashboard))
 
-8. **Memory marketplace** — `MemoryListing` Move contracts, escrow, access-rights purchase flow. (See [Section 13](#13-memory-marketplace))
+8. **Memory marketplace** — `MemoryRegisterMarketObject` Move contracts, escrow, access-rights purchase flow. (See [Section 13](#13-memory-marketplace))
 
 ---
 
@@ -568,7 +601,7 @@ The dashboard is a **read layer** over data that already exists: SUI events, on-
 
 #### Memory browser
 
-Displays all `MemoryChunkRef` objects owned by the user's `MemoryRegistry`, grouped by namespace.
+Displays all `MemoryChunkRef` objects owned by the user's `MemoryRegister`, grouped by namespace.
 
 - Tree view of namespace hierarchy (e.g. `personal/family`, `work/project-alpha`)
 - Per-chunk: preview of decrypted content snippet, tags, creation date, author (which agent wrote it), TTL countdown if set
@@ -577,19 +610,19 @@ Displays all `MemoryChunkRef` objects owned by the user's `MemoryRegistry`, grou
 - Bulk export as JSON or plain text
 
 **Data sources:**
-- On-chain: `MemoryChunkRef` objects from `MemoryRegistry` (SUI RPC `getOwnedObjects`)
+- On-chain: `MemoryChunkRef` objects from `MemoryRegister` (SUI RPC `getOwnedObjects`)
 - Off-chain: vector index for search, DA layer for content preview (decrypt client-side using user's key)
 
 #### Access control panel
 
-Shows every `AgentCap` and `Delegation` currently active under the user's registry.
+Shows every `VerifiableCredential` and `Delegation` currently active under the user's registry.
 
 - List of agents with access: agent DID, granted namespaces, permission level, expiry
-- Revoke button per agent (posts `revoke_agent_cap` tx)
+- Revoke button per agent (posts `revoke_credential` tx)
 - Grant new delegation wizard (select agent DID → select namespace prefix → set expiry → sign tx)
 - Pending delegation requests (agents that have requested access but not yet been approved)
 
-**Data sources:** On-chain `AgentCap` and `Delegation` objects via SUI RPC.
+**Data sources:** On-chain `VerifiableCredential` and `Delegation` objects via SUI RPC.
 
 #### Activity feed
 
@@ -689,13 +722,13 @@ The **dashboard API layer** is a lightweight backend that:
 - Handles WebSocket fan-out to connected dashboard clients
 - Decrypts content previews server-side only if the user has authenticated and provided their key, or handles client-side decryption via the browser wallet
 
-**Authentication for the dashboard:** zkLogin. The user signs in with their OAuth provider, which derives their SUI address, which is the owner of their `MemoryRegistry`. No separate account system needed.
+**Authentication for the dashboard:** zkLogin. The user signs in with their OAuth provider, which derives their SUI address, which is the owner of their `MemoryRegister`. No separate account system needed.
 
 ---
 
 ## 13. Memory marketplace
 
-The marketplace lets users **sell access rights to memory namespaces** — not the raw data. The buyer receives a scoped `AgentCap` object upon purchase. The seller retains full ownership of their `MemoryRegistry` and can revoke the sold cap at any time (with reputational and possibly escrow consequences).
+The marketplace lets users **sell access rights to memory namespaces** — not the raw data. The buyer receives a scoped `VerifiableCredential` object upon purchase. The seller retains full ownership of their `MemoryRegister` and can revoke the sold cap at any time (with reputational and possibly escrow consequences).
 
 This is the correct model: you are selling a **licence to query**, not transferring data.
 
@@ -708,30 +741,22 @@ This is the correct model: you are selling a **licence to query**, not transferr
 
 ### 13.2 SUI Move objects for the marketplace
 
-#### `MemoryListing`
+#### `MemoryRegisterMarketObject`
 
 ```move
-public struct MemoryListing has key, store {
+#### `MemoryRegisterMarketObject`
+
+Used to list a `MemoryRegister` for sale. The seller locks their `MemoryRegister` inside this object and sets a price in USDC.
+Upon purchase, the buyer receives the `MemoryRegister` and a fresh `MemoryRegisterCap`, and all active `VerifiableCredential`s are revoked.
+
+```move
+public struct MemoryRegisterMarketObject has key, store {
     id: UID,
+    amount_in_usdc: u64,
     seller: address,
-    registry_id: ID,
-    listing_type: u8,           // NAMESPACE=0, TAG_FILTER=1, BUNDLE=2, SUBSCRIPTION=3
-    namespace_prefix: Option<vector<u8>>,
-    tag_filter: Option<vector<vector<u8>>>,
-    chunk_ids: Option<vector<vector<u8>>>,
-    price: u64,                 // in MIST (SUI base unit)
-    subscription_period: Option<u64>, // seconds, for subscription type
-    access_duration: u64,       // how long the purchased AgentCap is valid
-    permissions: u8,            // READ only for marketplace sales
-    title: vector<u8>,
-    description: vector<u8>,
-    preview_chunk_ids: vector<vector<u8>>, // free preview chunks
-    total_sales: u64,
-    rating_sum: u64,
-    rating_count: u64,
-    active: bool,
-    created_at: u64,
+    register: MemoryRegister,
 }
+```
 ```
 
 #### `PurchaseReceipt`
@@ -742,7 +767,7 @@ public struct PurchaseReceipt has key, store {
     listing_id: ID,
     buyer: address,
     seller: address,
-    agent_cap_id: ID,       // the AgentCap minted on purchase
+    agent_cap_id: ID,       // the VerifiableCredential minted on purchase
     price_paid: u64,
     purchased_at: u64,
     expires_at: u64,
@@ -769,7 +794,7 @@ public struct MarketplaceEscrow has key {
 ### 13.3 Purchase flow
 
 ```
-1. Seller creates MemoryListing on-chain
+1. Seller creates MemoryRegisterMarketObject on-chain
    └── Sets price, access_duration, namespace_prefix, title, description
 
 2. Buyer browses marketplace (off-chain index of active listings)
@@ -779,34 +804,34 @@ public struct MarketplaceEscrow has key {
 
 3. Buyer submits purchase transaction
    ├── Pays price into MarketplaceEscrow object
-   ├── Marketplace contract mints a new AgentCap scoped to listing's namespace
-   │   └── AgentCap.expiry = now + access_duration
-   │   └── AgentCap.permissions = READ only
+   ├── Marketplace contract mints a new VerifiableCredential scoped to listing's namespace
+   │   └── VerifiableCredential.expiry = now + access_duration
+   │   └── VerifiableCredential.permissions = READ only
    └── PurchaseReceipt emitted as event, stored as object in buyer's address
 
 4. Payment release (configurable per listing)
    ├── UPFRONT: seller receives payment immediately on purchase
    ├── LINEAR: payment streams to seller over access_duration
-   └── ON_EXPIRY: seller receives payment when AgentCap expires (buyer protection)
+   └── ON_EXPIRY: seller receives payment when VerifiableCredential expires (buyer protection)
 
-5. Buyer's agent uses purchased AgentCap to query seller's memory namespace
-   └── Same query flow as standard memory_query — gateway checks AgentCap as normal
+5. Buyer's agent uses purchased VerifiableCredential to query seller's memory namespace
+   └── Same query flow as standard memory_query — gateway checks VerifiableCredential as normal
 
 6. Access expires
-   ├── AgentCap.expiry passes → gateway rejects future queries
+   ├── VerifiableCredential.expiry passes → gateway rejects future queries
    └── Buyer can renew (new purchase tx) or let it lapse
 ```
 
 ### 13.4 Seller controls
 
-- **Revoke at will:** Seller can revoke any sold `AgentCap` at any time. If the escrow is `ON_EXPIRY` or `LINEAR`, revocation triggers a partial refund calculation. If `UPFRONT`, no refund — buyers should choose listing types accordingly.
+- **Revoke at will:** Seller can revoke any sold `VerifiableCredential` at any time. If the escrow is `ON_EXPIRY` or `LINEAR`, revocation triggers a partial refund calculation. If `UPFRONT`, no refund — buyers should choose listing types accordingly.
 - **Delist:** Seller sets `listing.active = false`. No new purchases. Existing purchased caps remain valid until expiry.
 - **Namespace privacy:** The seller's raw memory content is never exposed on-chain. The buyer queries through the same Seal-encrypted retrieval path. The marketplace never has access to plaintext.
 - **Preview chunks:** Seller designates specific chunk IDs as free previews. These are decryptable by anyone who loads the listing, without purchase.
 
 ### 13.5 Marketplace discovery (off-chain index)
 
-The marketplace frontend is backed by an off-chain indexer that watches for `MemoryListing` creation events and builds a searchable catalogue.
+The marketplace frontend is backed by an off-chain indexer that watches for `MemoryRegisterMarketObject` creation events and builds a searchable catalogue.
 
 Each listing in the catalogue includes:
 - Title, description, seller DID
@@ -820,7 +845,7 @@ Search is semantic — the indexer embeds listing descriptions and preview chunk
 
 ### 13.6 Ratings and reputation
 
-After a purchased `AgentCap` expires, the buyer can submit a rating transaction:
+After a purchased `VerifiableCredential` expires, the buyer can submit a rating transaction:
 
 ```move
 public struct Rating has key, store {
@@ -852,7 +877,7 @@ Seller receives: 97.5 SUI (per release schedule)
 sources/
 ├── marketplace/
 │   ├── memory_listing.move      # Listing CRUD, active/delist controls
-│   ├── purchase.move            # Purchase tx, AgentCap minting, escrow creation
+│   ├── purchase.move            # Purchase tx, VerifiableCredential minting, escrow creation
 │   ├── escrow.move              # Payment release schedules, refund logic
 │   ├── rating.move              # Post-expiry buyer ratings
 │   └── treasury.move            # Protocol fee collection, governance
@@ -862,7 +887,7 @@ sources/
 
 Add these steps after the core system is live:
 
-9. **Marketplace Move contracts** — `MemoryListing`, `MarketplaceEscrow`, `PurchaseReceipt`, `Rating`, `treasury`. Deploy to testnet.
+9. **Marketplace Move contracts** — `MemoryRegisterMarketObject`, `MarketplaceEscrow`, `PurchaseReceipt`, `Rating`, `treasury`. Deploy to testnet.
 
 10. **Marketplace indexer** — Watch for listing events, build semantic search catalogue, embed preview chunks.
 
