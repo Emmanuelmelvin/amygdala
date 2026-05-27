@@ -18,6 +18,7 @@ public struct Namespace has store, copy, drop {
 public struct MemoryRegister has key, store {
     id: UID,
     register_id: String,
+    client_id: String,
     name: String,
     description: String,
     created_by: address,
@@ -53,11 +54,13 @@ public struct MemoryRegisterListedEvent has copy, drop {
 public struct MemoryRegisterCreatedEvent has copy, drop {
     register_id: ID,
     created_by: address,
+    client_id: String,
 }
 
 #[allow(lint(self_transfer))]
 public fun create_memory_register(
     register_id_str: String,
+    client_id: String,
     name: String,
     description: String,
     clock: &sui::clock::Clock,
@@ -69,6 +72,7 @@ public fun create_memory_register(
     let register = MemoryRegister {
         id,
         register_id: register_id_str,
+        client_id,
         name,
         description,
         created_by: ctx.sender(),
@@ -86,6 +90,7 @@ public fun create_memory_register(
     event::emit(MemoryRegisterCreatedEvent {
         register_id: obj_id,
         created_by: ctx.sender(),
+        client_id,
     });
 
     transfer::public_share_object(register);
@@ -109,15 +114,36 @@ public fun revoke_credentials(
     }
 }
 
+public struct NamespaceAddedEvent has copy, drop {
+    register_id: ID,
+    prefix: String,
+}
+
+public struct NamespaceRemovedEvent has copy, drop {
+    register_id: ID,
+    prefix: String,
+}
+
+public struct NamespacePermissionsUpdatedEvent has copy, drop {
+    register_id: ID,
+    prefix: String,
+}
+
 public fun add_namespace(
     register: &mut MemoryRegister,
     cap: &MemoryRegisterCap,
     prefix: String,
     permissions: vector<Permission>
 ) {
-    assert!(object::uid_to_inner(&register.id) == cap.register_id, ENotAuthorized);
+    let register_uid = object::uid_to_inner(&register.id);
+    assert!(register_uid == cap.register_id, ENotAuthorized);
     let namespace = Namespace { prefix, permissions };
     std::vector::push_back(&mut register.namespaces, namespace);
+
+    event::emit(NamespaceAddedEvent {
+        register_id: register_uid,
+        prefix,
+    });
 }
 
 public fun remove_namespace(
@@ -125,7 +151,8 @@ public fun remove_namespace(
     cap: &MemoryRegisterCap,
     prefix: String
 ) {
-    assert!(object::uid_to_inner(&register.id) == cap.register_id, ENotAuthorized);
+    let register_uid = object::uid_to_inner(&register.id);
+    assert!(register_uid == cap.register_id, ENotAuthorized);
     
     let mut i = 0;
     let len = std::vector::length(&register.namespaces);
@@ -133,6 +160,10 @@ public fun remove_namespace(
         let ns = std::vector::borrow(&register.namespaces, i);
         if (ns.prefix == prefix) {
             std::vector::remove(&mut register.namespaces, i);
+            event::emit(NamespaceRemovedEvent {
+                register_id: register_uid,
+                prefix,
+            });
             break
         };
         i = i + 1;
@@ -145,7 +176,8 @@ public fun update_namespace_permissions(
     prefix: String,
     new_permissions: vector<Permission>
 ) {
-    assert!(object::uid_to_inner(&register.id) == cap.register_id, ENotAuthorized);
+    let register_uid = object::uid_to_inner(&register.id);
+    assert!(register_uid == cap.register_id, ENotAuthorized);
     
     let mut i = 0;
     let len = std::vector::length(&register.namespaces);
@@ -153,6 +185,10 @@ public fun update_namespace_permissions(
         let ns = std::vector::borrow_mut(&mut register.namespaces, i);
         if (ns.prefix == prefix) {
             ns.permissions = new_permissions;
+            event::emit(NamespacePermissionsUpdatedEvent {
+                register_id: register_uid,
+                prefix,
+            });
             break
         };
         i = i + 1;
