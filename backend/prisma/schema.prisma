@@ -1,0 +1,86 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id            String   @id // This will map to Clerk's user.id
+  email         String   @unique
+  name          String?
+  picture       String?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  registers     MemoryRegisterIndex[]
+}
+
+// Off-chain index of the SUI Memory Registers
+model MemoryRegisterIndex {
+  id            String   @id @default(uuid())
+  
+  // The on-chain Object ID
+  objectId      String   @unique
+  registerId    String   @unique // The custom string identifier
+  
+  name          String
+  description   String
+  imageUrl      String?
+  
+  ownerId       String
+  owner         User     @relation(fields: [ownerId], references: [id])
+
+  createdAt     DateTime @default(now())
+  
+  credentials   CredentialIndex[]
+}
+
+// Off-chain index of Verifiable Credentials (Agent Caps)
+model CredentialIndex {
+  id             String   @id @default(uuid())
+  
+  // On-chain Object ID
+  objectId       String   @unique
+  
+  agentDid       String
+  agentAddress   String
+  
+  registerId     String
+  register       MemoryRegisterIndex @relation(fields: [registerId], references: [id])
+  
+  ttl            BigInt?
+  revoked        Boolean  @default(false)
+  
+  createdAt      DateTime @default(now())
+  
+  sessions       SessionIndex[]
+}
+
+// Active Agent Sessions
+model SessionIndex {
+  id             String   @id @default(uuid())
+  
+  sessionKey     String   @unique // The 10-14 char random key
+  
+  credentialId   String
+  credential     CredentialIndex @relation(fields: [credentialId], references: [id])
+  
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime? 
+}
+
+// Off-chain logs mapping to AccessLog events (Read/Write history)
+model AccessLog {
+  id             String   @id @default(uuid())
+  registerObjId  String
+  agentDid       String
+  sessionKey     String
+  operation      String   // READ, WRITE, DELETED
+  chunkIds       String[] // Array of CIDs / Object IDs
+  
+  timestamp      DateTime @default(now())
+}

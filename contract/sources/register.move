@@ -109,6 +109,56 @@ public fun revoke_credentials(
     }
 }
 
+public fun add_namespace(
+    register: &mut MemoryRegister,
+    cap: &MemoryRegisterCap,
+    prefix: String,
+    permissions: vector<Permission>
+) {
+    assert!(object::uid_to_inner(&register.id) == cap.register_id, ENotAuthorized);
+    let namespace = Namespace { prefix, permissions };
+    std::vector::push_back(&mut register.namespaces, namespace);
+}
+
+public fun remove_namespace(
+    register: &mut MemoryRegister,
+    cap: &MemoryRegisterCap,
+    prefix: String
+) {
+    assert!(object::uid_to_inner(&register.id) == cap.register_id, ENotAuthorized);
+    
+    let mut i = 0;
+    let len = std::vector::length(&register.namespaces);
+    while (i < len) {
+        let ns = std::vector::borrow(&register.namespaces, i);
+        if (ns.prefix == prefix) {
+            std::vector::remove(&mut register.namespaces, i);
+            break
+        };
+        i = i + 1;
+    }
+}
+
+public fun update_namespace_permissions(
+    register: &mut MemoryRegister,
+    cap: &MemoryRegisterCap,
+    prefix: String,
+    new_permissions: vector<Permission>
+) {
+    assert!(object::uid_to_inner(&register.id) == cap.register_id, ENotAuthorized);
+    
+    let mut i = 0;
+    let len = std::vector::length(&register.namespaces);
+    while (i < len) {
+        let ns = std::vector::borrow_mut(&mut register.namespaces, i);
+        if (ns.prefix == prefix) {
+            ns.permissions = new_permissions;
+            break
+        };
+        i = i + 1;
+    }
+}
+
 public fun list_memory_register(
     cap: MemoryRegisterCap,
     register: MemoryRegister,

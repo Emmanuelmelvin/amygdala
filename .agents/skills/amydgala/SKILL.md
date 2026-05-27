@@ -293,6 +293,22 @@ public struct Namespace has store, copy, drop {
     prefix: String,
     permissions: vector<Permission>,
 }
+
+public struct MemoryRegisterCap has key, store {
+    id: UID,
+    register_id: ID,
+}
+
+public enum Permission has copy, drop, store {
+    Read,
+    Write,
+    Delete
+}
+
+public struct Namespace has store, copy, drop {
+    prefix: String,
+    permissions: vector<Permission>,
+}
 ```
 
 #### `VerifiableCredential`
@@ -308,6 +324,11 @@ public struct VerifiableCredential has key, store {
     namespaces: vector<Namespace>,
     ttl: Option<u64>,
     revoked: bool,
+}
+
+public struct SessionCreatedEvent has copy, drop {
+    credential_id: ID,
+    session_key: String,
 }
 
 public struct SessionCreatedEvent has copy, drop {

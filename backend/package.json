@@ -1,5 +1,5 @@
 {
-  "name": "backend",
+  "name": "@amygdala/backend",
   "version": "1.0.0",
   "description": "Backend service for Amygdala",
   "main": "dist/index.js",
@@ -12,11 +12,14 @@
     "test": "echo \"No tests configured\""
   },
   "dependencies": {
+    "@amygdala/types": "workspace:*",
+    "@clerk/fastify": "^3.1.31",
     "@fastify/cors": "^11.2.0",
     "@fastify/jwt": "^10.1.0",
     "@mysten/sui": "^2.17.0",
     "@prisma/client": "^7.8.0",
     "@qdrant/js-client-rest": "^1.18.0",
+    "@trpc/server": "^11.17.0",
     "anthropic": "^0.0.0",
     "bullmq": "^5.77.4",
     "dotenv": "^17.4.2",
