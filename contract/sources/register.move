@@ -1,13 +1,15 @@
 module amygdala::memory_register;
 
 use std::string::String;
+use std::option;
 use sui::event;
 use sui::url::{Self, Url};
+
+const ENotAuthorized: u64 = 0;
 
 public enum Permission has copy, drop, store {
     Read,
     Write,
-    Delete
 }
 
 public struct Namespace has store, copy, drop {
@@ -17,24 +19,23 @@ public struct Namespace has store, copy, drop {
 
 public struct MemoryRegister has key, store {
     id: UID,
-    register_id: String,
-    client_id: String,
     name: String,
     description: String,
-    created_by: address,
-    namespaces: vector<Namespace>,
-    revoked_verifiable_credentials: vector<ID>,
-    created_on: u64,
     image_url: Url,
+    tag: String,
+    credit_count: u64,
+    created_by: address,
+    current_owner: address,
+    last_updated_at: u64,
+    last_query_at: u64,
+    market_value_in_usdc: Option<u64>,
+    namespaces: vector<Namespace>,
+    created_on: u64,
 }
 
 public struct MemoryRegisterCap has key, store {
     id: UID,
     register_id: ID,
-}
-
-public fun register_id(cap: &MemoryRegisterCap): ID {
-    cap.register_id
 }
 
 public struct MemoryRegisterMarketObject has key, store {
@@ -51,16 +52,36 @@ public struct MemoryRegisterListedEvent has copy, drop {
     seller: address,
 }
 
+public struct NamespacePermissionsUpdatedEvent has copy, drop {
+    register_id: ID,
+    prefix: String,
+}
+
 public struct MemoryRegisterCreatedEvent has copy, drop {
     register_id: ID,
     created_by: address,
-    client_id: String,
+}
+
+public(package) fun get_current_owner(register: &MemoryRegister): address {
+    register.current_owner
+}
+
+public(package) fun get_credit_count(register: &MemoryRegister): u64 {
+    register.credit_count
+}
+
+public(package) fun add_credit_count(register: &mut MemoryRegister, amount: u64) {
+    register.credit_count = register.credit_count + amount;
+}
+
+public(package) fun subtract_credit_count(register: &mut MemoryRegister, amount: u64) {
+    assert!(register.credit_count >= amount, ENotAuthorized);
+    register.credit_count = register.credit_count - amount;
 }
 
 #[allow(lint(self_transfer))]
 public fun create_memory_register(
-    register_id_str: String,
-    client_id: String,
+    tag: String,
     name: String,
     description: String,
     clock: &sui::clock::Clock,
@@ -71,15 +92,18 @@ public fun create_memory_register(
 
     let register = MemoryRegister {
         id,
-        register_id: register_id_str,
-        client_id,
+        tag,
         name,
         description,
         created_by: ctx.sender(),
+        current_owner: ctx.sender(),
+        credit_count: 0,
         namespaces: vector[],
-        revoked_verifiable_credentials: vector[],
         created_on: sui::clock::timestamp_ms(clock),
         image_url: url::new_unsafe_from_bytes(b"https://example.com/default-register-image.png"),
+        last_updated_at: sui::clock::timestamp_ms(clock),
+        last_query_at: sui::clock::timestamp_ms(clock),
+        market_value_in_usdc: option::none(),
     };
 
     let cap = MemoryRegisterCap {
@@ -89,44 +113,22 @@ public fun create_memory_register(
 
     event::emit(MemoryRegisterCreatedEvent {
         register_id: obj_id,
-        created_by: ctx.sender(),
-        client_id,
+        created_by: ctx.sender()
     });
 
     transfer::public_share_object(register);
     transfer::public_transfer(cap, ctx.sender());
 }
 
-const ENotAuthorized: u64 = 0;
+public (package) fun register_id(cap: &MemoryRegisterCap): ID { cap.register_id }
 
-public fun revoke_credentials(
-    register: &mut MemoryRegister,
-    cap: &MemoryRegisterCap,
-    credential_ids: vector<ID>,
-) {
-    assert!(object::uid_to_inner(&register.id) == cap.register_id, ENotAuthorized);
-
+public (package) fun namespace_exists(register: &MemoryRegister, prefix: &String): bool {
     let mut i = 0;
-    while (i < std::vector::length(&credential_ids)) {
-        let cred_id = std::vector::borrow(&credential_ids, i);
-        std::vector::push_back(&mut register.revoked_verifiable_credentials, *cred_id);
+    while (i < register.namespaces.length()) {
+        if (&register.namespaces[i].prefix == prefix) return true;
         i = i + 1;
-    }
-}
-
-public struct NamespaceAddedEvent has copy, drop {
-    register_id: ID,
-    prefix: String,
-}
-
-public struct NamespaceRemovedEvent has copy, drop {
-    register_id: ID,
-    prefix: String,
-}
-
-public struct NamespacePermissionsUpdatedEvent has copy, drop {
-    register_id: ID,
-    prefix: String,
+    };
+    false
 }
 
 public fun add_namespace(
@@ -137,38 +139,14 @@ public fun add_namespace(
 ) {
     let register_uid = object::uid_to_inner(&register.id);
     assert!(register_uid == cap.register_id, ENotAuthorized);
-    let namespace = Namespace { prefix, permissions };
-    std::vector::push_back(&mut register.namespaces, namespace);
 
-    event::emit(NamespaceAddedEvent {
-        register_id: register_uid,
-        prefix,
-    });
+    if(namespace_exists(register, &prefix) ) {
+        // Namespace already exists, do not add again
+        return;
+    };
+    register.namespaces.push_back(Namespace { prefix, permissions });
 }
 
-public fun remove_namespace(
-    register: &mut MemoryRegister,
-    cap: &MemoryRegisterCap,
-    prefix: String
-) {
-    let register_uid = object::uid_to_inner(&register.id);
-    assert!(register_uid == cap.register_id, ENotAuthorized);
-    
-    let mut i = 0;
-    let len = std::vector::length(&register.namespaces);
-    while (i < len) {
-        let ns = std::vector::borrow(&register.namespaces, i);
-        if (ns.prefix == prefix) {
-            std::vector::remove(&mut register.namespaces, i);
-            event::emit(NamespaceRemovedEvent {
-                register_id: register_uid,
-                prefix,
-            });
-            break
-        };
-        i = i + 1;
-    }
-}
 
 public fun update_namespace_permissions(
     register: &mut MemoryRegister,
@@ -254,8 +232,6 @@ public fun buy_memory_register<T>(
         id: object::new(ctx),
         register_id: object::id(&register),
     };
-
-    revoke_credentials(&mut register, &cap, active_credential_ids);
 
     event::emit(MemoryRegisterBoughtEvent {
         market_id,
