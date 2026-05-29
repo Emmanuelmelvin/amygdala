@@ -85,6 +85,7 @@ public(package) fun subtract_credit_count(register: &mut MemoryRegister, amount:
 public fun create_memory_register(
     tag: String,
     name: String,
+    image_url_bytes: vector<u8>, // Vector of raw bytes representing the image URL string
     description: String,
     clock: &sui::clock::Clock,
     ctx: &mut TxContext
@@ -102,7 +103,7 @@ public fun create_memory_register(
         credit_count: 0,
         namespaces: vector[],
         created_on: sui::clock::timestamp_ms(clock),
-        image_url: url::new_unsafe_from_bytes(b"https://example.com/default-register-image.png"),
+        image_url: url::new_unsafe_from_bytes(image_url_bytes),
         last_updated_at: sui::clock::timestamp_ms(clock),
         last_query_at: sui::clock::timestamp_ms(clock),
         market_value_in_usdc: option::none(),
