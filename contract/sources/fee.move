@@ -24,7 +24,7 @@ fun init(ctx: &mut TxContext) {
 
 /// Executed by the Platform Agent backend. 
 /// Validates rate-limits and deducts credits in one single operation.
-public fun process_agent_write_request(
+public fun process_agent_request(
     _auth: &AdminCap,
     credential: &mut VerifiableCredential,
     register: &mut MemoryRegister,

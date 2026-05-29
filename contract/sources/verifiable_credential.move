@@ -116,7 +116,7 @@ public fun create_credential(
     transfer::public_share_object(credential);
 }
 
-/// Call this function whenever an agent makes a memory read attempt using this credential
+/// Call this function whenever an agent makes a memory read/write attempt using the agent credential
 public fun use_credential_permission(
     credential: &mut VerifiableCredential,
     clock: &Clock
