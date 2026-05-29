@@ -10,6 +10,7 @@ const ENotAuthorized: u64 = 0;
 public enum Permission has copy, drop, store {
     Read,
     Write,
+    Delete
 }
 
 public struct Namespace has store, copy, drop {
@@ -131,20 +132,64 @@ public (package) fun namespace_exists(register: &MemoryRegister, prefix: &String
     false
 }
 
+public (package) fun get_namespace_count(register: &MemoryRegister): u64 {
+    register.namespaces.length() as u64
+}
+public (package) fun get_namespace_prefix(register: &MemoryRegister, index: u64): String {
+    assert!(index < register.namespaces.length() as u64, ENotAuthorized);
+    register.namespaces[index].prefix
+}
+
+public (package) fun get_namespace_permissions(register: &MemoryRegister, prefix: &String): Option<vector<Permission>> {
+    let mut i = 0;
+    while (i < register.namespaces.length()) {
+        if (&register.namespaces[i].prefix == prefix) return option::some(register.namespaces[i].permissions);
+        i = i + 1;
+    };
+    option::none()
+}
+
+public (package) fun has_namespace_permission(register: &MemoryRegister, prefix: &String, permission: Permission): bool {
+    let mut i = 0;
+    while (i < register.namespaces.length()) {
+        if (&register.namespaces[i].prefix == prefix) {
+            let permissions = &register.namespaces[i].permissions;
+            let mut j = 0;
+            while (j < permissions.length()) {
+                if (permissions[j] == permission) return true;
+                j = j + 1;
+            };
+        };
+        i = i + 1;
+    };
+    false
+}
+
+public fun get_namespaces(register: &MemoryRegister): vector<Namespace> {
+    register.namespaces
+}
+
 public fun add_namespace(
     register: &mut MemoryRegister,
     cap: &MemoryRegisterCap,
-    prefix: String,
-    permissions: vector<Permission>
+    prefixes: vector<String>,
+    permissions: vector<vector<Permission>>
 ) {
     let register_uid = object::uid_to_inner(&register.id);
     assert!(register_uid == cap.register_id, ENotAuthorized);
 
-    if(namespace_exists(register, &prefix) ) {
-        // Namespace already exists, do not add again
-        return;
-    };
-    register.namespaces.push_back(Namespace { prefix, permissions });
+    let mut i = 0;
+    while (i < prefixes.length()) {
+        let prefix = &prefixes[i];
+        let permission = &permissions[i];
+        if(namespace_exists(register, prefix) ) {
+            // Namespace already exists, do not add again
+            i = i + 1;
+            continue;
+        };
+        register.namespaces.push_back(Namespace { prefix: *prefix, permissions: *permission });
+        i = i + 1;
+    }
 }
 
 
@@ -216,7 +261,6 @@ public struct MemoryRegisterBoughtEvent has copy, drop {
 public fun buy_memory_register<T>(
     market_obj: MemoryRegisterMarketObject,
     payment: sui::coin::Coin<T>,
-    active_credential_ids: vector<ID>,
     ctx: &mut TxContext
 ) {
     let MemoryRegisterMarketObject { id, amount_in_usdc, seller, register } = market_obj;
