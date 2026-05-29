@@ -1,11 +1,12 @@
 module amygdala::memory_register;
 
 use std::string::String;
-use std::option;
+use std::option::{Self, Option};
 use sui::event;
 use sui::url::{Self, Url};
 
 const ENotAuthorized: u64 = 0;
+const EIndexOutOfBounds: u64 = 1;
 
 public enum Permission has copy, drop, store {
     Read,
@@ -121,42 +122,49 @@ public fun create_memory_register(
     transfer::public_transfer(cap, ctx.sender());
 }
 
-public (package) fun register_id(cap: &MemoryRegisterCap): ID { cap.register_id }
+public(package) fun register_id(cap: &MemoryRegisterCap): ID { cap.register_id }
 
-public (package) fun namespace_exists(register: &MemoryRegister, prefix: &String): bool {
+public(package) fun namespace_exists(register: &MemoryRegister, prefix: &String): bool {
     let mut i = 0;
-    while (i < register.namespaces.length()) {
-        if (&register.namespaces[i].prefix == prefix) return true;
+    let len = register.namespaces.length();
+    while (i < len) {
+        if (&register.namespaces.borrow(i).prefix == prefix) return true;
         i = i + 1;
     };
     false
 }
 
-public (package) fun get_namespace_count(register: &MemoryRegister): u64 {
-    register.namespaces.length() as u64
-}
-public (package) fun get_namespace_prefix(register: &MemoryRegister, index: u64): String {
-    assert!(index < register.namespaces.length() as u64, ENotAuthorized);
-    register.namespaces[index].prefix
+public(package) fun get_namespace_count(register: &MemoryRegister): u64 {
+    register.namespaces.length()
 }
 
-public (package) fun get_namespace_permissions(register: &MemoryRegister, prefix: &String): Option<vector<Permission>> {
+public(package) fun get_namespace_prefix(register: &MemoryRegister, index: u64): String {
+    assert!(index < register.namespaces.length(), EIndexOutOfBounds);
+    register.namespaces.borrow(index).prefix
+}
+
+public(package) fun get_namespace_permissions(register: &MemoryRegister, prefix: &String): Option<vector<Permission>> {
     let mut i = 0;
-    while (i < register.namespaces.length()) {
-        if (&register.namespaces[i].prefix == prefix) return option::some(register.namespaces[i].permissions);
+    let len = register.namespaces.length();
+    while (i < len) {
+        let ns = register.namespaces.borrow(i);
+        if (&ns.prefix == prefix) return option::some(ns.permissions);
         i = i + 1;
     };
     option::none()
 }
 
-public (package) fun has_namespace_permission(register: &MemoryRegister, prefix: &String, permission: Permission): bool {
+public(package) fun has_namespace_permission(register: &MemoryRegister, prefix: &String, permission: Permission): bool {
     let mut i = 0;
-    while (i < register.namespaces.length()) {
-        if (&register.namespaces[i].prefix == prefix) {
-            let permissions = &register.namespaces[i].permissions;
+    let len = register.namespaces.length();
+    while (i < len) {
+        let ns = register.namespaces.borrow(i);
+        if (&ns.prefix == prefix) {
+            let permissions = &ns.permissions;
             let mut j = 0;
-            while (j < permissions.length()) {
-                if (permissions[j] == permission) return true;
+            let p_len = permissions.length();
+            while (j < p_len) {
+                if (*permissions.borrow(j) == permission) return true;
                 j = j + 1;
             };
         };
@@ -178,20 +186,23 @@ public fun add_namespace(
     let register_uid = object::uid_to_inner(&register.id);
     assert!(register_uid == cap.register_id, ENotAuthorized);
 
-    let mut i = 0;
-    while (i < prefixes.length()) {
-        let prefix = &prefixes[i];
-        let permission = &permissions[i];
-        if(namespace_exists(register, prefix) ) {
-            // Namespace already exists, do not add again
-            i = i + 1;
+    let mut mut_prefixes = prefixes;
+    let mut mut_permissions = permissions;
+
+    while (!mut_prefixes.is_empty()) {
+        let prefix = mut_prefixes.remove(0);
+        let permission_set = mut_permissions.remove(0);
+        
+        if (namespace_exists(register, &prefix)) {
             continue;
         };
-        register.namespaces.push_back(Namespace { prefix: *prefix, permissions: *permission });
-        i = i + 1;
+        
+        register.namespaces.push_back(Namespace { 
+            prefix, 
+            permissions: permission_set 
+        });
     }
 }
-
 
 public fun update_namespace_permissions(
     register: &mut MemoryRegister,
@@ -203,9 +214,9 @@ public fun update_namespace_permissions(
     assert!(register_uid == cap.register_id, ENotAuthorized);
     
     let mut i = 0;
-    let len = std::vector::length(&register.namespaces);
+    let len = register.namespaces.length();
     while (i < len) {
-        let ns = std::vector::borrow_mut(&mut register.namespaces, i);
+        let ns = register.namespaces.borrow_mut(i);
         if (ns.prefix == prefix) {
             ns.permissions = new_permissions;
             event::emit(NamespacePermissionsUpdatedEvent {
@@ -263,18 +274,20 @@ public fun buy_memory_register<T>(
     payment: sui::coin::Coin<T>,
     ctx: &mut TxContext
 ) {
-    let MemoryRegisterMarketObject { id, amount_in_usdc, seller, register } = market_obj;
+    let MemoryRegisterMarketObject { id, amount_in_usdc, seller, mut register } = market_obj;
     let market_id = object::uid_to_inner(&id);
     let register_id = object::id(&register);
 
-    assert!(sui::coin::value(&payment) >= amount_in_usdc, ENotAuthorized); // Reusing ENotAuthorized for insufficient funds here as a stub
+    assert!(sui::coin::value(&payment) >= amount_in_usdc, ENotAuthorized); 
     transfer::public_transfer(payment, seller);
     id.delete();
 
-    let mut register = register;
+    // Dynamically update ownership of the inner struct data upon sale
+    register.current_owner = ctx.sender();
+
     let cap = MemoryRegisterCap {
         id: object::new(ctx),
-        register_id: object::id(&register),
+        register_id: register_id,
     };
 
     event::emit(MemoryRegisterBoughtEvent {
@@ -284,6 +297,7 @@ public fun buy_memory_register<T>(
         buyer: ctx.sender(),
     });
 
+    // Share the object out again under its new ownership bounds
     transfer::public_share_object(register);
     transfer::public_transfer(cap, ctx.sender());
 }
